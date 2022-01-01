@@ -1,0 +1,745 @@
+---
+title: "bachelors testing set"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load(ggplot2, tidyverse, pastecs, lme4, nlme, WRS, reshape, ggpubr,plyr,emmeans,lmerTest,gtools,xlsx)
+```
+
+## R Markdown
+
+## binary HGF response models.
+
+```{r}
+#beta vs zeta plotting the difference in their infered beliefs.
+setwd('C:/Users/Jespe/OneDrive/Dokumenter/GitHub/bachelor data analyse')
+
+values = c(0.1,1,5,10,50)
+betaf <- function(beta, x){
+  data.frame(x = x, value = 1/(1+exp(beta*(-2*x+1))))
+}
+
+params <- expand.grid(beta = values)
+
+all <- mdply(params, betaf, x = seq(0, 1, length=200))
+
+all$beta = as.factor(all$beta)
+
+
+ggplot(all, aes(x, value, colour=as.factor(as.numeric(beta)))) + geom_line(size = 1)
+
+zetaf <- function(beta, x){
+  data.frame(x = x, value = x^beta/(x^beta+(1-x)^beta))
+}
+
+params <- expand.grid(beta = values)
+
+all1 <- mdply(params, zetaf, x = seq(0, 1, length=200))
+
+all1$beta = as.factor(all1$beta)
+
+
+all$func = "softmax"
+all1$func = "unitsquare"
+
+all2 = rbind(all, all1)
+
+ggplot(all2, aes(x, value,col = beta)) + geom_line(size = 1)+facet_grid(~func)
+
+```
+
+
+
+
+
+## loading data and making functions
+
+```{r}
+#load data.
+setwd("C:/Users/Jespe/OneDrive/Skrivebord/TPL/csv")
+rawfiles = list.files(pattern = "*.csv")
+ 
+filesname = list.files(pattern = "*.csv") %>% substr(8,8)
+raw = data.frame(NULL)
+
+for (i in 1:length(rawfiles)){
+a = read.csv(rawfiles[i])
+a$cohort = filesname[i]
+
+
+if(exists('SessionEndT',a) == T){
+  a$SessionEndT = NULL
+}
+
+
+raw = rbind(raw,a)
+}
+
+raw$cohort = as.factor(raw$cohort)
+raw$stim = as.factor(raw$stim)
+raw$predResp = as.factor(raw$predResp)
+raw$stormdb = as.numeric(raw$stormdb)
+raw$stormdb = as.factor(raw$stormdb)
+raw$predAcc = as.factor(raw$predAcc)
+
+raw$stim = as.character(raw$stim)
+
+raw = raw %>% filter(stim != "NaN")
+
+raw$stim = as.factor(raw$stim)
+
+raw= raw %>% dplyr::rename(ColdRating = vasResp_1,
+                     WarmRating = vasResp_2,
+                     BurnRating = vasResp_3)
+
+a = raw %>% group_by(cohort) %>% dplyr::summarize(n=unique(stormdb))
+
+a %>% group_by(cohort) %>% dplyr::summarize(n = n())
+
+```
+
+
+```{r}
+#seperate into the two data-set
+raw1 = raw %>% filter(cohort != 1)
+raw2 = raw %>% filter(cohort == 1)
+```
+
+```{r}
+#function to get the outliers
+make_remover = function(data){
+g = data %>% filter(as.character(predResp) == "NaN") %>% dplyr::group_by(stormdb) %>% dplyr::summarize(n())
+
+q = data %>% filter(is.nan(ColdRating) == T | is.nan(WarmRating) == T | is.nan(BurnRating) == T)
+
+q$sort = ifelse(is.nan(q$ColdRating) == T & is.nan(q$WarmRating) == T & is.nan(q$BurnRating) == T, q$sort <- 0, q$sort <- 1)
+
+q1 = filter(q, sort == 1)
+
+g1 = q1 %>% dplyr::group_by(stormdb) %>% dplyr::summarize(n())
+
+g = data.frame(g)
+g1 = data.frame(g1)
+
+t = g %>% filter(n..>31)
+t1 = g1 %>% filter(n..>31)
+
+tt <<- rbind(t,t1)
+
+x = 10
+gg = data %>% filter(stim == 2)%>% dplyr::group_by(stormdb, v1) %>% dplyr::summarize(q = quantile(BurnRating, na.rm = T)[4])
+
+gg$col = ifelse(gg$q>x, gg$col <- 1, gg$col <- 2)
+  
+
+ttt = gg %>% filter(col == 2)
+ttt = ttt[,1]
+tt1 = data.frame(stormdb = tt$stormdb)
+
+if(sum(tt1[,1] %in% ttt$stormdb) != length(t(tt1))){
+  for (i in 1:length(t(tt1))){
+    if(tt1[i,1] %in% ttt$stormdb != T){
+      a = length(t(ttt))
+      ttt[a+1,1] = tt1[i,1]
+    }
+  }}
+removers <<- ttt
+}
+```
+
+```{r}
+#getting the outliers out of the data.
+removers_train = make_remover(raw2)
+removers_all = make_remover(raw1)
+removers = make_remover(raw)
+
+#write.csv(removers_train, "removers_train.csv")
+#write.csv(removers_all, "removers_all.csv")
+```
+
+## descriptive stats.
+```{r}
+#getting all the descriptive stats.
+setwd('C:/Users/Jespe/OneDrive/Skrivebord/bachelors pain threshholds')
+thresh1 = read.csv('qst-cohort1.csv')
+native1 = data.frame(thresh1[,c(1,13)])
+native1$cohort = 1
+thresh1 = thresh1[,1:8]
+thresh1$cohort = 1
+thresh2 = read.csv('qst-cohort2.csv')
+native2 = data.frame(thresh2[,c(1,13)])
+native2$cohort = 2
+thresh2 = thresh2[,1:8]
+thresh2$cohort = 2
+thresh3 = read.csv('qst-cohort3.csv')
+native3 = data.frame(thresh3[,c(1,12)])
+native3$cohort = 3
+thresh3 = thresh3[,1:8]
+thresh3$cohort = 3
+thresh = rbind(thresh1,thresh2,thresh3)
+
+native1 = native1 %>% filter(language_pre == 2)
+native2 = native2 %>% filter(language_pre == 2)
+native3 = native3 %>% filter(age_eng != 0)
+native3$age_eng = 2
+names(native3)[2] = "language_pre"
+native = rbind(native1, native2, native3)
+thresh$cohort = as.factor(thresh$cohort)
+thresh = thresh %>% filter(id %in% removers$stormdb == F)
+native1 = native %>% filter(id %in% removers$stormdb == F)
+
+
+native1 %>% dplyr::group_by(cohort) %>% dplyr::summarize(n= n()/20)
+
+#find doubles: 3 participants 381, 546 and 615 had their data plugged in twice
+thresh %>% dplyr::group_by(id) %>% dplyr::summarise(n = n())
+doubles = c(381,546,615)
+thresh2 = thresh %>% filter(id %in% doubles == F)
+aa = thresh %>% filter(id == doubles[1])
+thresh2 = rbind(aa[1:20,],thresh2)
+aa = thresh %>% filter(id == doubles[2])
+aa = aa[1:nrow(aa)%%2!=0,]
+thresh2 = rbind(aa,thresh2)
+aa = thresh %>% filter(id == doubles[3])
+aa = aa[1:nrow(aa)%%2!=0,]
+thresh2 = rbind(aa,thresh2)
+thresh = thresh2
+```
+
+```{r}
+#how many participants per sex and cohort
+thresh %>% dplyr::group_by(sex,cohort) %>% dplyr::summarise(n = n()/20)
+#age
+thresh %>% dplyr::group_by(cohort) %>% dplyr::summarise(meanage = mean(age), sdage = sd(age), range = range(age))
+# all age
+thresh %>% dplyr::summarise(meanage = mean(age), sdage = sd(age), range = range(age))
+```
+
+```{r}
+#finding the average detecting temperature for cold
+thresh %>% filter(task == "detect" & quality == "cold") %>% dplyr::group_by(cohort) %>% dplyr::summarize(mean = mean(threshold), sd = sd(threshold), range = range(threshold))
+#finding the average detecting temperature for warm
+thresh %>% filter(task == "detect" & quality == "warm") %>% dplyr::group_by(cohort) %>% dplyr::summarize(mean = mean(threshold), sd = sd(threshold), range = range(threshold))
+```
+
+```{r}
+#finding the average pain threshhold  for cold
+thresh %>% filter(task == "pain" & quality == "cold") %>% dplyr::group_by(cohort) %>% dplyr::summarize(mean = mean(threshold), sd = sd(threshold), range = range(threshold))
+#finding the average pain threshhold for warm
+thresh %>% filter(task == "pain" & quality == "warm") %>% dplyr::group_by(cohort) %>% dplyr::summarize(mean = mean(threshold), sd = sd(threshold), range = range(threshold))
+#finding the average pain threshhold for tgi
+thresh %>% filter(quality == "tgi") %>% mutate(thresholdcold = 30-(threshold-30)) %>% dplyr::group_by(cohort) %>% dplyr::summarize(mean = c(mean(threshold), mean(thresholdcold)), sd = c(sd(threshold), sd(thresholdcold)))
+
+#finding the range for the tgi
+thresh %>% filter(quality == "tgi") %>% mutate(thresholdcold = 30-(threshold-30)) %>% dplyr::group_by(cohort) %>% dplyr::summarize(rw = range(threshold), rc = range(thresholdcold))
+```
+
+```{r}
+#finding what people got in the actual experiment
+all = raw %>% filter(stormdb %in% removers$stormdb == F)
+mean(all$stimDuration, na.rm = T)
+sd(all$stimDuration, na.rm = T)
+
+c = all %>% filter(stim == 2) %>% dplyr::group_by(stormdb, cohort) %>% dplyr::summarize(meanw = round(mean(targetT_1)),meanc = round(mean(targetT_2)))
+
+c %>% dplyr::group_by(cohort) %>% dplyr::summarize(warm = mean(meanw), sdw = sd(meanw), cold = mean(meanc), sdc = sd(meanc), rangew = range(meanw), rangec = range(meanc))
+
+
+c %>% dplyr::summarize(warm = mean(meanw), sdw = sd(meanw), cold = mean(meanc), sdc = sd(meanc), rangew = range(meanw), rangec = range(meanc))
+
+mean(c$meanw)
+sd(c$meanw)
+mean(c$meanc)
+sd(c$meanc)
+
+#finding the stimduration
+all %>% group_by(cohort) %>% dplyr::summarize(mean = mean(stimDuration, na.rm = T), sd = sd(stimDuration, na.rm = T))
+```
+
+## learning
+
+```{r}
+#for the results:
+#removing the outliers.
+test = raw1 %>% filter(stormdb %in% removers_all$stormdb == F)
+train = raw2 %>% filter(stormdb %in% removers$stormdb == F)
+test1 = test %>% dplyr::filter(predAcc != "NaN")
+train1 = train %>% dplyr::filter(predAcc != "NaN")
+
+cueprob = read.csv('C:/Users/Jespe/OneDrive/Dokumenter/GitHub/bachelor data analyse/cueprob.csv', header = FALSE)
+
+test$stormdb = as.numeric(as.character(test$stormdb))
+
+
+test$prob = as.factor(test$prob)
+test$stormdb = as.factor(test$stormdb)
+
+
+test$prob = relevel(test$prob, ref = "0.82")
+
+m1 = glmer(predAcc ~ 1+prob + trial + predRT+(1|stormdb), data = test1, family = "binomial")
+summary(m1)
+
+test$prob = relevel(test$prob, ref = "0.18")
+m3 = glmer(predAcc ~ 1+prob + trial + predRT+(1|stormdb), data = test1, family = "binomial")
+summary(m3)
+
+exp(m1@beta[1])/(1+exp(m1@beta[1]))
+exp(m1@beta[2])/(1+exp(m1@beta[2]))
+exp(m1@beta[3])/(1+exp(m1@beta[3]))
+```
+
+## crossmodal correspondance
+```{r}
+#crossmodal correspondance.
+
+test1$cues = as.factor(test1$cues)
+m3 = glmer(predResp ~ 0+cues + (1|stormdb), data = test1, family = "binomial")
+summary(m3)
+
+
+exp(m3@beta[1])/(1+exp(m3@beta[1]))
+exp(m3@beta[2])/(1+exp(m3@beta[2]))
+
+```
+
+```{r}
+#squareroot transformation for normality of residuals assumption
+test1$ColdRatings = sqrt(test1$ColdRating)
+test1$WarmRatings = sqrt(test1$WarmRating)
+test1$BurnRatings = sqrt(test1$BurnRating)
+
+```
+
+## hypothesis 1
+```{r}
+test1$stim = as.factor(test1$stim)
+test1$stim = relevel(test1$stim, ref = "0")
+m4 = lmer(ColdRatings ~ 1+stim*predAcc+trial+vasRT_1+(1|stormdb), data = test1)
+summary(m4)
+
+test1$stim = relevel(test1$stim, ref = "0")
+m5 = lmer(WarmRatings ~ 1+stim*predAcc+trial+vasRT_2+(1|stormdb), data = test1)
+summary(m5)
+
+m6 = lmer(BurnRatings ~ 1+stim*predAcc+trial+vasRT_3+(1|stormdb), data = test1)
+summary(m6)
+
+
+
+
+test2= test1 %>% dplyr::rename(Stimulus = stim,
+                     Accuracy = predAcc)
+test2 = test2 %>% filter(Stimulus != "2")
+
+test2$Stimulus = as.factor(as.character(test2$Stimulus))
+test2$Accuracy = as.factor(as.character(test2$Accuracy))
+levels(test2$Accuracy) = c("Wrong", "Right")
+levels(test2$Stimulus) = c("Cold", "Warm")
+
+```
+
+
+```{r}
+ggline(test2, 
+       x = "Stimulus", 
+       y = "ColdRating", 
+       col='Accuracy',
+       add = c("mean_ci", "dodge"), 
+       palette = c("red", "green"))
+
+ggline(test2, 
+       x = "Stimulus", 
+       y = "WarmRating", 
+       col='Accuracy', 
+       add = c("mean_ci", "dodge"), 
+       palette = c("red", "green"))
+
+ggline(test2, 
+       x = "Stimulus", 
+       y = "BurnRating", 
+       col='Accuracy', 
+       add = c("mean_ci", "dodge"), 
+       palette = c("red", "green"))
+
+```
+
+## model comparison plots.
+```{r}
+#model comparison plots cohort1
+setwd('C:/Users/Jespe/OneDrive/Skrivebord/tapas/tapas-master/HGF')
+modelcompar = read.csv('qq_cohort1.csv', header = F)
+modelcompar$model = c("HGF (fixed Kappa)","HGF","Rescorla-Wagner","Sutton-K1")
+
+names(modelcompar)[1] = "Model frequencies"
+names(modelcompar)[2] = "Exceedance probability"
+
+modelcompar$`Model frequencies` = modelcompar$`Model frequencies`*56
+modelcompar$`Exceedance probability` = modelcompar$`Exceedance probability`*56
+
+df = melt(modelcompar, id.vars = "model")
+
+ggplot(df, aes(x = model, y = value, fill = variable))+geom_bar(stat = "identity", position = "dodge")+scale_y_continuous(name = "Model Frequency", sec.axis = sec_axis(~./56, name = "Exceedance probability"))+theme(axis.title.y = element_text(color = "red"), axis.text.y = element_text(color = "red"), axis.title.y.right = element_text(color = "blue"), axis.text.y.right = element_text(color = "blue"))+scale_fill_manual(values=c("red","blue"))+theme(legend.position="none")+theme(axis.text.y = element_text(color = "red"))+theme(axis.title.x = element_blank())+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))
+
+
+```
+
+
+```{r}
+#model comparisons plot cohort 2+3
+setwd('C:/Users/Jespe/OneDrive/Skrivebord/tapas/tapas-master/HGF')
+modelcompar = read.csv('qq_all.csv', header = F)
+modelcompar$model = c("HGF (fixed Kappa)","HGF","Rescorla-Wagner","Sutton-K1")
+
+names(modelcompar)[1] = "Model frequencies"
+names(modelcompar)[2] = "Exceedance probability"
+
+modelcompar$`Model frequencies` = modelcompar$`Model frequencies`*158
+modelcompar$`Exceedance probability` = modelcompar$`Exceedance probability`*158
+
+df = melt(modelcompar, id.vars = "model")
+
+ggplot(df, aes(x = model, y = value, fill = variable))+geom_bar(stat = "identity", position = "dodge")+scale_y_continuous(name = "Model Frequency", sec.axis = sec_axis(~./158, name = "Exceedance probability"))+theme(axis.title.y = element_text(color = "red"), axis.text.y = element_text(color = "red"), axis.title.y.right = element_text(color = "blue"), axis.text.y.right = element_text(color = "blue"))+scale_fill_manual(values=c("red","blue"))+theme(legend.position="none")+theme(axis.text.y = element_text(color = "red"))+theme(axis.title.x = element_blank()) +theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))
+
+```
+
+
+## different sequences.
+```{r}
+#plotting the probabilities (the two different sequences)
+
+qq = raw %>% filter(stormdb == "547" | stormdb == "548")
+
+qq$Sequence = ifelse(qq$stormdb == "547", qq$Sequence <- "1", qq$Sequence <- "2")
+
+qq = qq[,c(45,47)]
+qq1 = qq
+qq1 %>% ggplot(aes(x = 1:612, y = prob, col = Sequence))+geom_step()+scale_color_manual(values = c("red", "blue"))+guides(color = guide_legend(override.aes = list(size = 5)))
+
+qq1 = qq[1:306,]
+qq2 = qq[307:612,]
+qq = cbind(qq1,qq2)
+
+names(qq)[1] = "prob1"
+
+names(qq)[2] = "sequence1"
+
+qq %>% ggplot(aes(x = 1:306))+geom_step(aes(y = prob1),size = 1.5, col = "blue")+ylab("P(Stimulus = Warm |Cue = low)")+geom_step(aes(y = prob),size = 1.5, col = "red")+ylab("P(Stimulus = Warm |Cue = low)")+xlab("Trial")+theme_classic()
+
+```
+
+## t-tests
+```{r}
+#t-tests for the second hypothesis
+library(rstatix)
+library(effsize)
+setwd('C:/Users/Jespe/OneDrive/Skrivebord/tapas/tapas-master/HGF')
+sa = read.csv('betasa.csv', header = F)
+esti = read.csv('betaesti.csv', header = F)
+envi = read.csv('betaenvi.csv', header = F)
+#9 = tgi, 8 = warm, 7 = cold. Sa = sa2hat, esti = estimation uncertainty, envi = enviromental uncertainty.
+value = envi
+sa1 = data.frame(cold = value[,9],warm = value[,8])
+sa2 = melt(sa1)
+levene_test(sa2, value ~ variable)
+
+t.test(value[,9],value[,8], paried = T)
+
+t.test(value[,9],value[,7], paried = T,var.equal = F)
+
+cohen.d(value[,8],value[,7])
+
+```
+
+
+
+
+
+
+
+
+
+
+
+## Parameter recovery:
+
+```{r}
+#correlational parameter recovery for cohort 1.
+setwd('C:/Users/Jespe/OneDrive/Skrivebord/tapas/tapas-master/HGF')
+difdn = read.csv('parametr_recovery_dn_cohort1_dif.csv', header = FALSE)
+difom2 = read.csv('parametr_recovery_omega2_cohort1_dif.csv', header = FALSE)
+difom3 = read.csv('parametr_recovery_omega3_cohort1_dif.csv', header = FALSE)
+aomega2 = read.csv('aomega2.csv', header = FALSE)
+aomega3 = read.csv('aomega3.csv', header = FALSE)
+adn = read.csv('adn_cohort1.csv', header = FALSE)
+aom2 = read.csv('aomega2_cohort1.csv', header = FALSE)
+aom3 = read.csv("aomega3_cohort1.csv", header = FALSE)
+
+aom2 = as.data.frame(t(aom2))
+aom3 = as.data.frame(t(aom3))
+adn = as.data.frame(t(adn))
+difdn1 = as.data.frame(t(difdn))
+difom2 = as.data.frame(t(difom2))
+difom3 = as.data.frame(t(difom3))
+
+
+
+get_cor = function(dif,real){
+sim = data.frame(1)
+for (i in 1:56){
+  a = data.frame(f = dif[,i]+real[i,])
+  mean = mean(a[,1])
+  sim = cbind(sim, mean)
+}
+sim$X1 = NULL
+sim <- data.frame(t(sim))
+result <<- cor.test(sim$t.sim., real$V1)
+}
+
+resultdn = get_cor(difdn1,adn)
+resultom2 = get_cor(difom2,aom2)
+resultom3 = get_cor(difom3,aom3)
+
+resultdn
+resultom2
+resultom3
+```
+
+
+
+```{r}
+#cohort 1 parameter recovery
+setwd('C:/Users/Jespe/OneDrive/Skrivebord/tapas/tapas-master/HGF')
+difdn = read.csv('parametr_recovery_dn_cohort1_dif.csv', header = FALSE)
+difom2 = read.csv('parametr_recovery_omega2_cohort1_dif.csv', header = FALSE)
+difom3 = read.csv('parametr_recovery_omega3_cohort1_dif.csv', header = FALSE)
+aomega2 = read.csv('aomega2_cohort1.csv', header = FALSE)
+aomega3 = read.csv('aomega3_cohort1.csv', header = FALSE)
+adn = read.csv('adn_cohort1.csv', header = FALSE)
+
+adn = as.data.frame(t(aomega2))
+difdn1 = as.data.frame(t(difom2))
+
+
+
+sim = data.frame(1)
+for (i in 1:56){
+  a = data.frame(f = difdn1[,i]+adn[i,])
+  mean = mean(a[,1])
+  sim = cbind(sim, mean)
+}
+sim$X1 = NULL
+
+sim = data.frame(t(sim))
+
+cor.test(sim$t.sim., adn$V1)
+
+```
+
+
+
+
+```{r}
+#recovery plot and analysis for cohort1
+setwd('C:/Users/Jespe/OneDrive/Skrivebord/tapas/tapas-master/HGF')
+difdn = read.csv('parametr_recovery_dn_cohort1_dif.csv', header = FALSE)
+difom2 = read.csv('parametr_recovery_omega2_cohort1_dif.csv', header = FALSE)
+difom3 = read.csv('parametr_recovery_omega3_cohort1_dif.csv', header = FALSE)
+
+difdn1 = as.data.frame(t(difdn))
+
+
+a = difdn1 %>% pivot_longer(cols = everything())
+
+a$name = as.factor(a$name)
+af = a %>% dplyr::group_by(name) %>% dplyr::summarize(mean = mean(value), sd = sd(value))
+af$upper = af$mean+1.96*af$sd/sqrt(n)
+af$lower = af$mean-1.96*af$sd/sqrt(n)
+
+af$col = ifelse(af$upper<0, af$col <- "0", ifelse(af$lower > 0, af$col <- "0", af$col <- "1"))
+names(af)[6] = "Recovered"
+
+af$Recovered = as.factor(af$Recovered)
+levels(af$Recovered ) = c("No", "Yes")
+
+af  %>% ggplot(aes(mean, name, col = Recovered))+geom_errorbar(aes(xmin = mean-1.96*sd/sqrt(n),xmax = mean+1.96*sd/sqrt(n)))+geom_point()+ggtitle(expression(zeta))+xlab("Mean difference")+ylab("Participants")+theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()) +theme(plot.title = element_text(hjust = 0.5))+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))+geom_vline(xintercept = 0, size = 1)
+
+af %>% dplyr::group_by(Recovered) %>% dplyr::summarize(n = n())
+
+```
+
+
+```{r}
+
+difdn1 = as.data.frame(t(difom2))
+
+a = difdn1 %>% pivot_longer(cols = everything())
+
+a$name = as.factor(a$name)
+af = a %>% dplyr::group_by(name) %>% dplyr::summarize(mean = mean(value), sd = sd(value))
+af$upper = af$mean+1.96*af$sd/sqrt(n)
+af$lower = af$mean-1.96*af$sd/sqrt(n)
+
+af$col = ifelse(af$upper<0, af$col <- "0", ifelse(af$lower > 0, af$col <- "0", af$col <- "1"))
+names(af)[6] = "Recovered"
+
+af$Recovered = as.factor(af$Recovered)
+levels(af$Recovered ) = c("No", "Yes")
+
+af %>% ggplot(aes(mean, name, col = Recovered))+geom_errorbar(aes(xmin = mean-1.96*sd/sqrt(n),xmax = mean+1.96*sd/sqrt(n)))+geom_point()+ggtitle(expression(omega))+xlab("Mean difference")+ylab("Participants")+theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()) +theme(plot.title = element_text(hjust = 0.55))+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))+geom_vline(xintercept = 0, size = 1)
+
+
+
+af %>% dplyr::group_by(Recovered) %>% dplyr::summarize(n = n())
+```
+
+
+```{r}
+difdn1 = as.data.frame(t(difom3))
+
+a = difdn1 %>% pivot_longer(cols = everything())
+n = 7
+a$name = as.factor(a$name)
+af = a %>% dplyr::group_by(name) %>% dplyr::summarize(mean = mean(value), sd = sd(value))
+af$upper = af$mean+1.96*af$sd/sqrt(n)
+af$lower = af$mean-1.96*af$sd/sqrt(n)
+
+af$col = ifelse(af$upper<0, af$col <- "0", ifelse(af$lower > 0, af$col <- "0", af$col <- "1"))
+names(af)[6] = "Recovered"
+
+af$Recovered = as.factor(af$Recovered)
+levels(af$Recovered ) = c("No", "Yes")
+
+af %>% filter(mean<3) %>% ggplot(aes(mean, name, col = Recovered))+geom_errorbar(aes(xmin = mean-1.96*sd/sqrt(n),xmax = mean+1.96*sd/sqrt(n)))+geom_point()+ggtitle(expression(theta))+xlab("Mean difference")+ylab("Participants")+theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()) +theme(plot.title = element_text(hjust = 0.5))+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))+geom_vline(xintercept = 0, size = 1)
+
+
+af %>% dplyr::group_by(Recovered) %>% dplyr::summarize(n = n())
+```
+
+
+
+
+
+```{r}
+#correlational test for parameter recovery for cohort 2+3
+setwd('C:/Users/Jespe/OneDrive/Skrivebord/tapas/tapas-master/HGF')
+difdn = read.csv('parametr_recovery_dn_all.csv', header = FALSE)
+difom2 = read.csv('parametr_recovery_om2_all.csv', header = FALSE)
+difom3 = read.csv('parametr_recovery_om3_all.csv', header = FALSE)
+adn = read.csv('adn.csv', header = FALSE)
+aom2 = read.csv('aomega2.csv', header = FALSE)
+aom3 = read.csv("aomega3.csv", header = FALSE)
+aom2 = as.data.frame(t(aom2))
+aom3 = as.data.frame(t(aom3))
+adn = as.data.frame(t(adn))
+difdn1 = as.data.frame(t(difdn))
+difom2 = as.data.frame(t(difom2))
+difom3 = as.data.frame(t(difom3))
+
+
+
+get_cor = function(dif,real){
+sim = data.frame(1)
+for (i in 1:158){
+  a = data.frame(f = dif[,i]+real[i,])
+  mean = mean(a[,1])
+  sim = cbind(sim, mean)
+}
+sim$X1 = NULL
+sim <- data.frame(t(sim))
+result <<- cor.test(sim$t.sim., real$V1)
+}
+
+resultdn = get_cor(difdn1,adn)
+resultom2 = get_cor(difom2,aom2)
+resultom3 = get_cor(difom3,aom3)
+```
+
+
+```{r}
+#recovery plots and analysis for cohort 2+3
+setwd('C:/Users/Jespe/OneDrive/Skrivebord/tapas/tapas-master/HGF')
+difdn = read.csv('parametr_recovery_dn_all.csv', header = FALSE)
+difom2 = read.csv('parametr_recovery_om2_all.csv', header = FALSE)
+difom3 = read.csv('parametr_recovery_om3_all.csv', header = FALSE)
+
+n = 10
+difdn1 = as.data.frame(t(difdn))
+difdn1 = difdn1[1:n,]
+a = difdn1 %>% pivot_longer(cols = everything())
+
+a$name = as.factor(a$name)
+af = a %>% dplyr::group_by(name) %>% dplyr::summarize(mean = mean(value), sd = sd(value))
+af$upper = af$mean+1.96*af$sd/sqrt(n)
+af$lower = af$mean-1.96*af$sd/sqrt(n)
+
+af$col = ifelse(af$upper<0, af$col <- "0", ifelse(af$lower > 0, af$col <- "0", af$col <- "1"))
+names(af)[6] = "Recovered"
+
+af$Recovered = as.factor(af$Recovered)
+levels(af$Recovered ) = c("No", "Yes")
+
+af  %>% ggplot(aes(mean, name, col = Recovered))+geom_errorbar(aes(xmin = mean-1.96*sd/sqrt(n),xmax = mean+1.96*sd/sqrt(n)))+geom_point()+ggtitle(expression(zeta))+xlab("Mean difference")+ylab("Participants")+theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()) +theme(plot.title = element_text(hjust = 0.5))+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))+geom_vline(xintercept = 0, size = 1)
+
+af %>% dplyr::group_by(Recovered) %>% dplyr::summarize(n = n())
+
+```
+
+
+```{r}
+difdn1 = as.data.frame(t(difom2))
+difdn1 = difdn1[1:n,]
+a = difdn1 %>% pivot_longer(cols = everything())
+
+a$name = as.factor(a$name)
+af = a %>% dplyr::group_by(name) %>% dplyr::summarize(mean = mean(value), sd = sd(value))
+af$upper = af$mean+1.96*af$sd/sqrt(n)
+af$lower = af$mean-1.96*af$sd/sqrt(n)
+
+af$col = ifelse(af$upper<0, af$col <- "0", ifelse(af$lower > 0, af$col <- "0", af$col <- "1"))
+names(af)[6] = "Recovered"
+
+af$Recovered = as.factor(af$Recovered)
+levels(af$Recovered ) = c("No", "Yes")
+
+af %>% ggplot(aes(mean, name, col = Recovered))+geom_errorbar(aes(xmin = mean-1.96*sd/sqrt(n),xmax = mean+1.96*sd/sqrt(n)))+geom_point()+ggtitle(expression(omega))+xlab("Mean difference")+ylab("Participants")+theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()) +theme(plot.title = element_text(hjust = 0.55))+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))+geom_vline(xintercept = 0, size = 1)
+
+
+
+af %>% dplyr::group_by(Recovered) %>% dplyr::summarize(n = n())
+```
+
+
+```{r}
+
+
+difdn1 = as.data.frame(t(difom3))
+
+a = difdn1 %>% pivot_longer(cols = everything())
+difdn1 = difdn1[1:n,]
+a$name = as.factor(a$name)
+af = a %>% dplyr::group_by(name) %>% dplyr::summarize(mean = mean(value), sd = sd(value))
+af$upper = af$mean+1.96*af$sd/sqrt(n)
+af$lower = af$mean-1.96*af$sd/sqrt(n)
+
+af$col = ifelse(af$upper<0, af$col <- "0", ifelse(af$lower > 0, af$col <- "0", af$col <- "1"))
+names(af)[6] = "Recovered"
+
+af$Recovered = as.factor(af$Recovered)
+levels(af$Recovered ) = c("No", "Yes")
+
+af %>% ggplot(aes(mean, name, col = Recovered))+geom_errorbar(aes(xmin = mean-1.96*sd/sqrt(n),xmax = mean+1.96*sd/sqrt(n)))+geom_point()+ggtitle(expression(theta))+xlab("Mean difference")+ylab("Participants")+theme(axis.text.y=element_blank(),axis.ticks.y=element_blank()) +theme(plot.title = element_text(hjust = 0.5))+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))+geom_vline(xintercept = 0, size = 1)
+
+
+```
+
